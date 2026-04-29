@@ -1,6 +1,8 @@
 import os
 import asyncio
+import threading
 from datetime import datetime
+from flask import Flask
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from telegram import (
@@ -22,8 +24,23 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 MONGO_URI = os.getenv("MONGO_URI")
+PORT = int(os.environ.get("PORT", 10000))
 
-# MongoDB
+# =========================
+# FLASK SERVER (KEEP ALIVE)
+# =========================
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "Bot is running 🚀"
+
+def run_web():
+    app_flask.run(host="0.0.0.0", port=PORT)
+
+# =========================
+# MONGODB
+# =========================
 client = MongoClient(MONGO_URI)
 db = client["telegram_bot"]
 
@@ -47,7 +64,7 @@ def save_user(user):
     )
 
 # =========================
-# START + UI
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -56,16 +73,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["💬 Chat", "ℹ️ Help"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-    text = f"""
-✨ Hello {user.first_name}!
-
-🤖 Welcome to Yash AI Bot  
-📩 Send text, photo, video, voice  
-
-Owner will reply you soon 🚀
-"""
-
-    await update.message.reply_text(text, reply_markup=reply_markup)
+    await update.message.reply_text(
+        f"✨ Hello {user.first_name}!\n\n🤖 Welcome to Yash AI Bot 🚀",
+        reply_markup=reply_markup
+    )
 
 # =========================
 # BUTTONS
@@ -74,15 +85,13 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if text == "ℹ️ Help":
-        await update.message.reply_text(
-            "📌 Send any message (text, photo, video, voice).\nAdmin will reply you."
-        )
+        await update.message.reply_text("Send any message, admin will reply you.")
 
     elif text == "💬 Chat":
         await update.message.reply_text("✍️ Send your message now!")
 
 # =========================
-# HANDLE USER MSG
+# USER MESSAGE
 # =========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -90,25 +99,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_user(user)
 
-    info = f"""
-📩 New Message
+    info = f"📩 New Message\n\n👤 {user.full_name}\n🔗 @{user.username}\n🆔 {user.id}"
 
-👤 {user.full_name}
-🔗 @{user.username}
-🆔 {user.id}
-"""
-
-    # Send user info
     await context.bot.send_message(ADMIN_ID, info)
 
-    # Forward message
     fwd = await context.bot.forward_message(
         ADMIN_ID,
         msg.chat_id,
         msg.message_id
     )
 
-    # Save mapping (reliable reply)
     messages_col.insert_one({
         "admin_msg_id": fwd.message_id,
         "user_id": user.id
@@ -142,21 +142,18 @@ async def reply_from_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Failed to send")
 
 # =========================
-# BROADCAST (PRO)
+# BROADCAST
 # =========================
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
     if not update.message.reply_to_message:
-        await update.message.reply_text(
-            "❌ Reply to a message\nUsage:\n1. Send media/text\n2. Reply with /broadcast <optional_link>"
-        )
+        await update.message.reply_text("Reply to message + /broadcast <link optional>")
         return
 
     msg = update.message.reply_to_message
 
-    # Optional button link
     keyboard = None
     if context.args:
         link = context.args[0]
@@ -178,12 +175,12 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=keyboard
             )
             success += 1
-            await asyncio.sleep(0.05)  # anti flood
+            await asyncio.sleep(0.05)
         except:
             failed += 1
 
     await update.message.reply_text(
-        f"📢 Broadcast Complete\n\n✅ Success: {success}\n❌ Failed: {failed}"
+        f"📢 Done\n✅ {success} | ❌ {failed}"
     )
 
 # =========================
@@ -195,21 +192,18 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     total = users_col.count_documents({})
 
-    await update.message.reply_text(
-        f"📊 Bot Stats\n\n👥 Total Users: {total}"
-    )
+    await update.message.reply_text(f"👥 Users: {total}")
 
 # =========================
-# MAIN
+# MAIN BOT
 # =========================
-def main():
+def run_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("stats", stats))
 
-    # Order matters
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
     app.add_handler(MessageHandler(filters.ALL & ~filters.User(ADMIN_ID), handle_message))
     app.add_handler(MessageHandler(filters.ALL & filters.User(ADMIN_ID), reply_from_admin))
@@ -217,5 +211,9 @@ def main():
     print("🚀 Bot running...")
     app.run_polling()
 
+# =========================
+# START BOTH
+# =========================
 if __name__ == "__main__":
-    main()
+    threading.Thread(target=run_bot).start()
+    run_web()
